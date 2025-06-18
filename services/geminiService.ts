@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, GenerateContentResponse, createUserContent, createPartFromUri, File as GeminiFile } from "@google/genai";
 
 const API_KEY = process.env.API_KEY;
@@ -10,8 +9,8 @@ if (!API_KEY || API_KEY === "YOUR_GEMINI_API_KEY") {
 }
 
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
-const videoModelName = 'gemini-2.5-pro-preview-05-06'; // No longer needed if analyzeImageForHazards is removed
-// const videoModelName = 'gemini-2.5-flash-preview-04-17'; // Updated as per user request
+// const videoModelName = 'gemini-2.5-pro-preview-05-06'; // No longer needed if analyzeImageForHazards is removed
+const videoModelName = 'gemini-2.5-flash-preview-04-17'; // Updated as per user request
 
 const POLLING_INTERVAL_MS = 5000;
 const MAX_POLLING_ATTEMPTS = 36; 
@@ -23,11 +22,51 @@ export const uploadVideoFile = async (
   if (!API_KEY || API_KEY === "YOUR_GEMINI_API_KEY") {
     throw new Error("API_KEY for Gemini is not configured. File upload cannot be performed.");
   }
+  
   try {
-    const mimeType = file.type || 'video/mp4';
+    // First upload to our backend for processing
+    const formData = new FormData();
+    formData.append('video', file);
+    if (displayName) {
+      formData.append('displayName', displayName);
+    }
+
+    const backendResponse = await fetch('http://localhost:3001/api/video/upload', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!backendResponse.ok) {
+      const errorData = await backendResponse.json().catch(() => ({}));
+      throw new Error(errorData.message || `Backend upload failed: ${backendResponse.status}`);
+    }
+
+    const backendResult = await backendResponse.json();
+    
+    if (!backendResult.success) {
+      throw new Error(backendResult.message || 'Backend upload failed');
+    }
+
+    const { videoId, processedFilename } = backendResult.data;
+
+    // Get the processed video file from backend
+    const processedVideoResponse = await fetch(`http://localhost:3001/api/video/${videoId}/stream`);
+    
+    if (!processedVideoResponse.ok) {
+      throw new Error('Failed to get processed video from backend');
+    }
+
+    // Convert the processed video to a File object for Gemini upload
+    const processedVideoBlob = await processedVideoResponse.blob();
+    const processedVideoFile = new File([processedVideoBlob], processedFilename, { 
+      type: file.type || 'video/mp4' 
+    });
+
+    // Now upload the processed video to Gemini
+    const mimeType = processedVideoFile.type || 'video/mp4';
     
     const initialUploadResponse: GeminiFile = await ai.files.upload({
-      file: file,
+      file: processedVideoFile,
       config: {
         mimeType: mimeType,
         displayName: displayName || file.name,
@@ -35,47 +74,45 @@ export const uploadVideoFile = async (
     });
 
     if (!initialUploadResponse.name) {
-        throw new Error("File name (resource ID) not found in initial upload response.");
+      throw new Error("File name (resource ID) not found in initial upload response.");
     }
-    const videoId = initialUploadResponse.name;
+    
+    const geminiFileId = initialUploadResponse.name;
 
+    // Poll for Gemini processing completion
     let attempts = 0;
     while (attempts < MAX_POLLING_ATTEMPTS) {
       await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL_MS));
       attempts++;
       
-      const currentFileStatus = await ai.files.get({ name: videoId });
+      const currentFileStatus = await ai.files.get({ name: geminiFileId });
 
       if (currentFileStatus.state === 'ACTIVE') {
         if (!currentFileStatus.uri) {
-            throw new Error("File is ACTIVE but URI is missing.");
+          throw new Error("File is ACTIVE but URI is missing.");
         }
         return {
           uri: currentFileStatus.uri,
           mimeType: currentFileStatus.mimeType || mimeType,
           name: currentFileStatus.displayName || file.name,
-          videoId: videoId
+          videoId: videoId // Return our backend video ID
         };
       } else if (currentFileStatus.state === 'FAILED') {
         let detailedErrorString = 'No specific error details were provided by Gemini.';
         if (currentFileStatus.error) {
-            // Log the raw object for interactive console inspection
-            console.error("Original Gemini file processing error object:", currentFileStatus.error);
-            try {
-                // Stringify the full error object to capture all its properties
-                detailedErrorString = JSON.stringify(currentFileStatus.error, null, 2);
-                console.error("Stringified Gemini file processing error details:", detailedErrorString);
-            } catch (e) {
-                // Fallback if stringify fails (unlikely for plain objects from APIs)
-                let errorMessage = currentFileStatus.error.toString();
-                if (typeof currentFileStatus.error === 'object' && currentFileStatus.error !== null && 'message' in currentFileStatus.error) {
-                    errorMessage = (currentFileStatus.error as {message: string}).message || errorMessage;
-                }
-                detailedErrorString = `Could not stringify error object. Raw error: ${errorMessage}`;
-                console.error(detailedErrorString);
+          console.error("Original Gemini file processing error object:", currentFileStatus.error);
+          try {
+            detailedErrorString = JSON.stringify(currentFileStatus.error, null, 2);
+            console.error("Stringified Gemini file processing error details:", detailedErrorString);
+          } catch (e) {
+            let errorMessage = currentFileStatus.error.toString();
+            if (typeof currentFileStatus.error === 'object' && currentFileStatus.error !== null && 'message' in currentFileStatus.error) {
+              errorMessage = (currentFileStatus.error as {message: string}).message || errorMessage;
             }
+            detailedErrorString = `Could not stringify error object. Raw error: ${errorMessage}`;
+            console.error(detailedErrorString);
+          }
         }
-        // Throw an error that includes the full stringified details (or best effort)
         throw new Error(`File processing failed. State: ${currentFileStatus.state}. Gemini Error: ${detailedErrorString}`);
       }
     }
@@ -85,9 +122,7 @@ export const uploadVideoFile = async (
   } catch (error) {
     console.error('Error during video file upload or processing:', error);
     if (error instanceof Error) {
-        // If the error is already a detailed one from our code (e.g., the throw above)
-        // or a network error, propagate its message.
-        throw new Error(`Error uploading/processing video: ${error.message}`);
+      throw new Error(`Error uploading/processing video: ${error.message}`);
     }
     throw new Error('An unknown error occurred while uploading or processing the video.');
   }
@@ -160,7 +195,7 @@ ${userInstructionPrompt || "Perform a general safety analysis."}
       }
     });
     
-    let jsonStr = response.text.trim();
+    let jsonStr = response.text?.trim() || '';
     const fenceRegex = /^```(?:json)?\s*\n?(.*?)\n?\s*```$/s;
     const match = jsonStr.match(fenceRegex);
     if (match && match[1]) {

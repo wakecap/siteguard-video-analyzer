@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 // Only import types and services relevant to VideoAnalysisPage and core app functionality
 import { ToastMessage, VideoAnalysisReport, DetectedViolation, ViolationSeverity, ReportStatus } from './types';
@@ -166,6 +165,41 @@ const VideoAnalysisFeature: React.FC<{ addToast: (message: string, type?: ToastM
   const [allSavedReports, setAllSavedReports] = useState<VideoAnalysisReport[]>([]);
   const [selectedReportForViewing, setSelectedReportForViewing] = useState<VideoAnalysisReport | null>(null);
 
+  // Add state to track video duration
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
+
+  // Effect to track video duration when video loads
+  useEffect(() => {
+    const videoElement = videoPlayerRef.current;
+    if (!videoElement) return;
+
+    const handleLoadedMetadata = () => {
+      if (videoElement.duration && isFinite(videoElement.duration)) {
+        setVideoDuration(videoElement.duration);
+        console.log('Video duration loaded:', videoElement.duration);
+      }
+    };
+
+    const handleDurationChange = () => {
+      if (videoElement.duration && isFinite(videoElement.duration)) {
+        setVideoDuration(videoElement.duration);
+        console.log('Video duration changed:', videoElement.duration);
+      }
+    };
+
+    videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+    videoElement.addEventListener('durationchange', handleDurationChange);
+
+    // If duration is already available, set it
+    if (videoElement.duration && isFinite(videoElement.duration)) {
+      setVideoDuration(videoElement.duration);
+    }
+
+    return () => {
+      videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      videoElement.removeEventListener('durationchange', handleDurationChange);
+    };
+  }, [videoSrc]);
 
   const loadAllSavedReports = useCallback(async () => {
     try {
@@ -184,6 +218,7 @@ const VideoAnalysisFeature: React.FC<{ addToast: (message: string, type?: ToastM
     setSelectedFile(null);
     if (videoSrc) URL.revokeObjectURL(videoSrc); // Ensure old object URLs are revoked
     setVideoSrc(null);
+    setVideoDuration(null); // Reset video duration
     setJsaContext("");
     setUserInstructionPrompt("Summarize this video focusing on safety. Identify violations and positive practices.");
     setIsUploading(false);
@@ -575,7 +610,7 @@ const VideoAnalysisFeature: React.FC<{ addToast: (message: string, type?: ToastM
   // Data for display (either live analysis or selected historical report)
   const displayData = selectedReportForViewing || analysisResult;
   const displayReportName = selectedReportForViewing?.videoFileName || uploadedFileDetails?.name || selectedFile?.name;
-  const displayVideoDuration = selectedReportForViewing?.videoDurationSeconds || videoPlayerRef.current?.duration;
+  const displayVideoDuration = selectedReportForViewing?.videoDurationSeconds || videoDuration;
 
   // FIX: Consolidate logic for accessing raw response for display
   // This will hold the raw response string from either a historical report or a new analysis.
@@ -753,6 +788,33 @@ const VideoAnalysisFeature: React.FC<{ addToast: (message: string, type?: ToastM
               </div>
             )}
 
+            {/* Fallback when timeline can't be displayed */}
+            {displayData.violations && displayData.violations.length > 0 && (!displayVideoDuration || !Number.isFinite(displayVideoDuration) || displayVideoDuration <= 0) && (
+              <div>
+                  <h4 className="text-lg font-semibold text-secondary-700 mb-2">Events Timeline:</h4>
+                  <div className="bg-warning-50 p-3 rounded-md border border-warning-200 text-warning-700">
+                    <p className="text-sm">Timeline unavailable: Video duration not loaded yet. Please wait for the video to fully load, or refresh the page.</p>
+                    <p className="text-xs mt-1">Current duration: {displayVideoDuration || 'undefined'}</p>
+                  </div>
+              </div>
+            )}
+
+            {/* Debug information for timeline visibility */}
+            {displayData.violations && displayData.violations.length > 0 && (
+              <details className="mt-2 text-xs">
+                <summary className="cursor-pointer text-secondary-600 hover:text-primary-700">Debug: Timeline Visibility</summary>
+                <div className="bg-secondary-100 p-3 rounded mt-1 text-secondary-700">
+                  <p><strong>Violations count:</strong> {displayData.violations.length}</p>
+                  <p><strong>Display video duration:</strong> {displayVideoDuration}</p>
+                  <p><strong>Is finite:</strong> {Number.isFinite(displayVideoDuration) ? 'Yes' : 'No'}</p>
+                  <p><strong>Duration &gt; 0:</strong> {displayVideoDuration > 0 ? 'Yes' : 'No'}</p>
+                  <p><strong>Video duration state:</strong> {videoDuration}</p>
+                  <p><strong>Video player duration:</strong> {videoPlayerRef.current?.duration}</p>
+                  <p><strong>Selected report duration:</strong> {selectedReportForViewing?.videoDurationSeconds}</p>
+                  <p><strong>Timeline should show:</strong> {displayData.violations && displayData.violations.length > 0 && displayVideoDuration && Number.isFinite(displayVideoDuration) && displayVideoDuration > 0 ? 'Yes' : 'No'}</p>
+                </div>
+              </details>
+            )}
 
             <div>
               <h4 className="text-lg font-semibold text-secondary-700 mb-2">Detected Violations ({displayData.violations?.length || 0}):</h4>
