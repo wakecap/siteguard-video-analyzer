@@ -1,0 +1,6 @@
+{
+  "name": "SiteGuard Giga Video Analyzer & Evidence - Linked to Site",
+  "description": "A web application for advanced construction site safety video analysis using Gemini. Users can upload videos, provide context, and receive detailed safety reports.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
